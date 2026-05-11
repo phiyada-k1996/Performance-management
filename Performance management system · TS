@@ -1,0 +1,758 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  OneToMany,
+  ManyToMany,
+  JoinTable,
+  JoinColumn,
+  Index,
+} from "typeorm";
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+export enum UserRole {
+  ADMIN = "admin",
+  MANAGER = "manager",
+  EMPLOYEE = "employee",
+  HR = "hr",
+}
+
+export enum UserStatus {
+  ACTIVE = "active",
+  INACTIVE = "inactive",
+  ON_LEAVE = "on_leave",
+}
+
+export enum OKRStatus {
+  DRAFT = "draft",
+  ACTIVE = "active",
+  COMPLETED = "completed",
+  CANCELLED = "cancelled",
+}
+
+export enum OKRLevel {
+  COMPANY = "company",
+  DEPARTMENT = "department",
+  TEAM = "team",
+  INDIVIDUAL = "individual",
+}
+
+export enum KPIType {
+  CORPORATE = "corporate",
+  INDIVIDUAL = "individual",
+}
+
+export enum KPIUnit {
+  PERCENTAGE = "percentage",
+  NUMBER = "number",
+  CURRENCY = "currency",
+  BOOLEAN = "boolean",
+  SCORE = "score",
+}
+
+export enum EvaluationCycle {
+  MONTHLY = "monthly",
+  QUARTERLY = "quarterly",
+  ANNUAL = "annual",
+}
+
+export enum EvaluationStatus {
+  PENDING = "pending",
+  SELF_REVIEW = "self_review",
+  MANAGER_REVIEW = "manager_review",
+  HR_REVIEW = "hr_review",
+  COMPLETED = "completed",
+}
+
+export enum IDPStatus {
+  DRAFT = "draft",
+  ACTIVE = "active",
+  ON_HOLD = "on_hold",
+  COMPLETED = "completed",
+  CANCELLED = "cancelled",
+}
+
+export enum IDPActionStatus {
+  NOT_STARTED = "not_started",
+  IN_PROGRESS = "in_progress",
+  COMPLETED = "completed",
+  OVERDUE = "overdue",
+}
+
+// ============================================================
+// INTERFACES
+// ============================================================
+
+export interface IUser {
+  id: string;
+  corporateEmail: string;
+  firstName: string;
+  lastName: string;
+  role: UserRole;
+  status: UserStatus;
+  department: string;
+  jobTitle: string;
+  employeeId: string;
+  managerId?: string;
+  manager?: IUser;
+  directReports?: IUser[];
+  okrs?: IOKR[];
+  evaluations?: IEvaluation[];
+  idps?: IIDP[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IKeyResult {
+  id: string;
+  title: string;
+  description?: string;
+  targetValue: number;
+  currentValue: number;
+  unit: string;
+  weight: number;
+  progress: number;
+  dueDate: Date;
+  okrId: string;
+  okr?: IOKR;
+  linkedKpis?: IKPI[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IOKR {
+  id: string;
+  title: string;
+  description?: string;
+  level: OKRLevel;
+  status: OKRStatus;
+  startDate: Date;
+  endDate: Date;
+  progress: number;
+  ownerId: string;
+  owner?: IUser;
+  parentOkrId?: string;
+  parentOkr?: IOKR;
+  childOkrs?: IOKR[];
+  keyResults?: IKeyResult[];
+  kpis?: IKPI[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IKPI {
+  id: string;
+  title: string;
+  description?: string;
+  type: KPIType;
+  unit: KPIUnit;
+  targetValue: number;
+  actualValue?: number;
+  baselineValue?: number;
+  weight: number;
+  department?: string;
+  ownerId?: string;
+  owner?: IUser;
+  okrId?: string;
+  okr?: IOKR;
+  keyResultId?: string;
+  keyResult?: IKeyResult;
+  periodStart: Date;
+  periodEnd: Date;
+  evaluations?: IEvaluation[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IEvaluationScore {
+  id: string;
+  evaluationId: string;
+  evaluation?: IEvaluation;
+  kpiId: string;
+  kpi?: IKPI;
+  selfScore?: number;
+  managerScore?: number;
+  finalScore?: number;
+  selfComment?: string;
+  managerComment?: string;
+  weight: number;
+  achievement: number;
+}
+
+export interface IEvaluation {
+  id: string;
+  cycle: EvaluationCycle;
+  status: EvaluationStatus;
+  periodStart: Date;
+  periodEnd: Date;
+  dueDate: Date;
+  evaluateeId: string;
+  evaluatee?: IUser;
+  evaluatorId: string;
+  evaluator?: IUser;
+  overallSelfScore?: number;
+  overallManagerScore?: number;
+  overallFinalScore?: number;
+  selfSummary?: string;
+  managerSummary?: string;
+  hrComment?: string;
+  scores?: IEvaluationScore[];
+  idpId?: string;
+  idp?: IIDP;
+  submittedAt?: Date;
+  completedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IIDPAction {
+  id: string;
+  idpId: string;
+  idp?: IIDP;
+  title: string;
+  description?: string;
+  status: IDPActionStatus;
+  targetDate: Date;
+  completedDate?: Date;
+  resources?: string;
+  successCriteria?: string;
+  progress: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IIDP {
+  id: string;
+  title: string;
+  description?: string;
+  status: IDPStatus;
+  employeeId: string;
+  employee?: IUser;
+  managerId: string;
+  manager?: IUser;
+  developmentGoals: string;
+  strengths?: string;
+  areasForImprovement?: string;
+  startDate: Date;
+  targetDate: Date;
+  completedDate?: Date;
+  actions?: IIDPAction[];
+  evaluations?: IEvaluation[];
+  linkedOkrId?: string;
+  linkedOkr?: IOKR;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ============================================================
+// ENTITIES
+// ============================================================
+
+@Entity("users")
+@Index(["corporateEmail"], { unique: true })
+@Index(["employeeId"], { unique: true })
+export class User implements IUser {
+  @PrimaryGeneratedColumn("uuid")
+  id: string;
+
+  @Column({ type: "varchar", length: 255, unique: true })
+  corporateEmail: string;
+
+  @Column({ type: "varchar", length: 100 })
+  firstName: string;
+
+  @Column({ type: "varchar", length: 100 })
+  lastName: string;
+
+  @Column({ type: "enum", enum: UserRole, default: UserRole.EMPLOYEE })
+  role: UserRole;
+
+  @Column({ type: "enum", enum: UserStatus, default: UserStatus.ACTIVE })
+  status: UserStatus;
+
+  @Column({ type: "varchar", length: 150 })
+  department: string;
+
+  @Column({ type: "varchar", length: 150 })
+  jobTitle: string;
+
+  @Column({ type: "varchar", length: 50, unique: true })
+  employeeId: string;
+
+  @Column({ type: "uuid", nullable: true })
+  managerId?: string;
+
+  @ManyToOne(() => User, (user) => user.directReports, { nullable: true })
+  @JoinColumn({ name: "managerId" })
+  manager?: User;
+
+  @OneToMany(() => User, (user) => user.manager)
+  directReports?: User[];
+
+  @OneToMany(() => OKR, (okr) => okr.owner)
+  okrs?: OKR[];
+
+  @OneToMany(() => KPI, (kpi) => kpi.owner)
+  kpis?: KPI[];
+
+  @OneToMany(() => Evaluation, (evaluation) => evaluation.evaluatee)
+  evaluations?: Evaluation[];
+
+  @OneToMany(() => IDP, (idp) => idp.employee)
+  idps?: IDP[];
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
+
+@Entity("okrs")
+@Index(["ownerId"])
+@Index(["status"])
+export class OKR implements IOKR {
+  @PrimaryGeneratedColumn("uuid")
+  id: string;
+
+  @Column({ type: "varchar", length: 255 })
+  title: string;
+
+  @Column({ type: "text", nullable: true })
+  description?: string;
+
+  @Column({ type: "enum", enum: OKRLevel })
+  level: OKRLevel;
+
+  @Column({ type: "enum", enum: OKRStatus, default: OKRStatus.DRAFT })
+  status: OKRStatus;
+
+  @Column({ type: "date" })
+  startDate: Date;
+
+  @Column({ type: "date" })
+  endDate: Date;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, default: 0 })
+  progress: number;
+
+  @Column({ type: "uuid" })
+  ownerId: string;
+
+  @ManyToOne(() => User, (user) => user.okrs)
+  @JoinColumn({ name: "ownerId" })
+  owner?: User;
+
+  @Column({ type: "uuid", nullable: true })
+  parentOkrId?: string;
+
+  @ManyToOne(() => OKR, (okr) => okr.childOkrs, { nullable: true })
+  @JoinColumn({ name: "parentOkrId" })
+  parentOkr?: OKR;
+
+  @OneToMany(() => OKR, (okr) => okr.parentOkr)
+  childOkrs?: OKR[];
+
+  @OneToMany(() => KeyResult, (kr) => kr.okr, { cascade: true })
+  keyResults?: KeyResult[];
+
+  @OneToMany(() => KPI, (kpi) => kpi.okr)
+  kpis?: KPI[];
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
+
+@Entity("key_results")
+@Index(["okrId"])
+export class KeyResult implements IKeyResult {
+  @PrimaryGeneratedColumn("uuid")
+  id: string;
+
+  @Column({ type: "varchar", length: 255 })
+  title: string;
+
+  @Column({ type: "text", nullable: true })
+  description?: string;
+
+  @Column({ type: "decimal", precision: 15, scale: 4 })
+  targetValue: number;
+
+  @Column({ type: "decimal", precision: 15, scale: 4, default: 0 })
+  currentValue: number;
+
+  @Column({ type: "varchar", length: 50 })
+  unit: string;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, default: 1 })
+  weight: number;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, default: 0 })
+  progress: number;
+
+  @Column({ type: "date" })
+  dueDate: Date;
+
+  @Column({ type: "uuid" })
+  okrId: string;
+
+  @ManyToOne(() => OKR, (okr) => okr.keyResults)
+  @JoinColumn({ name: "okrId" })
+  okr?: OKR;
+
+  @OneToMany(() => KPI, (kpi) => kpi.keyResult)
+  linkedKpis?: KPI[];
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
+
+@Entity("kpis")
+@Index(["type"])
+@Index(["ownerId"])
+@Index(["okrId"])
+export class KPI implements IKPI {
+  @PrimaryGeneratedColumn("uuid")
+  id: string;
+
+  @Column({ type: "varchar", length: 255 })
+  title: string;
+
+  @Column({ type: "text", nullable: true })
+  description?: string;
+
+  @Column({ type: "enum", enum: KPIType })
+  type: KPIType;
+
+  @Column({ type: "enum", enum: KPIUnit, default: KPIUnit.NUMBER })
+  unit: KPIUnit;
+
+  @Column({ type: "decimal", precision: 15, scale: 4 })
+  targetValue: number;
+
+  @Column({ type: "decimal", precision: 15, scale: 4, nullable: true })
+  actualValue?: number;
+
+  @Column({ type: "decimal", precision: 15, scale: 4, nullable: true })
+  baselineValue?: number;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, default: 1 })
+  weight: number;
+
+  @Column({ type: "varchar", length: 150, nullable: true })
+  department?: string;
+
+  @Column({ type: "uuid", nullable: true })
+  ownerId?: string;
+
+  /**
+   * Corporate KPIs: ownerId is null (department-level); type = KPIType.CORPORATE
+   * Individual KPIs: ownerId points to specific User; type = KPIType.INDIVIDUAL
+   */
+  @ManyToOne(() => User, (user) => user.kpis, { nullable: true })
+  @JoinColumn({ name: "ownerId" })
+  owner?: User;
+
+  @Column({ type: "uuid", nullable: true })
+  okrId?: string;
+
+  /**
+   * KPIs can be linked to an OKR (objective-level alignment)
+   * or a specific KeyResult (granular alignment).
+   * Both can be set simultaneously to support full hierarchy:
+   *   KPI → KeyResult → OKR
+   */
+  @ManyToOne(() => OKR, (okr) => okr.kpis, { nullable: true })
+  @JoinColumn({ name: "okrId" })
+  okr?: OKR;
+
+  @Column({ type: "uuid", nullable: true })
+  keyResultId?: string;
+
+  @ManyToOne(() => KeyResult, (kr) => kr.linkedKpis, { nullable: true })
+  @JoinColumn({ name: "keyResultId" })
+  keyResult?: KeyResult;
+
+  @Column({ type: "date" })
+  periodStart: Date;
+
+  @Column({ type: "date" })
+  periodEnd: Date;
+
+  @ManyToMany(() => Evaluation, (evaluation) => evaluation.kpis)
+  evaluations?: Evaluation[];
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
+
+@Entity("evaluation_scores")
+@Index(["evaluationId"])
+@Index(["kpiId"])
+export class EvaluationScore implements IEvaluationScore {
+  @PrimaryGeneratedColumn("uuid")
+  id: string;
+
+  @Column({ type: "uuid" })
+  evaluationId: string;
+
+  @ManyToOne(() => Evaluation, (evaluation) => evaluation.scores)
+  @JoinColumn({ name: "evaluationId" })
+  evaluation?: Evaluation;
+
+  @Column({ type: "uuid" })
+  kpiId: string;
+
+  @ManyToOne(() => KPI)
+  @JoinColumn({ name: "kpiId" })
+  kpi?: KPI;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, nullable: true })
+  selfScore?: number;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, nullable: true })
+  managerScore?: number;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, nullable: true })
+  finalScore?: number;
+
+  @Column({ type: "text", nullable: true })
+  selfComment?: string;
+
+  @Column({ type: "text", nullable: true })
+  managerComment?: string;
+
+  @Column({ type: "decimal", precision: 5, scale: 2 })
+  weight: number;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, default: 0 })
+  achievement: number;
+}
+
+@Entity("evaluations")
+@Index(["evaluateeId"])
+@Index(["evaluatorId"])
+@Index(["cycle", "periodStart", "periodEnd"])
+export class Evaluation implements IEvaluation {
+  @PrimaryGeneratedColumn("uuid")
+  id: string;
+
+  @Column({ type: "enum", enum: EvaluationCycle })
+  cycle: EvaluationCycle;
+
+  @Column({
+    type: "enum",
+    enum: EvaluationStatus,
+    default: EvaluationStatus.PENDING,
+  })
+  status: EvaluationStatus;
+
+  @Column({ type: "date" })
+  periodStart: Date;
+
+  @Column({ type: "date" })
+  periodEnd: Date;
+
+  @Column({ type: "date" })
+  dueDate: Date;
+
+  @Column({ type: "uuid" })
+  evaluateeId: string;
+
+  @ManyToOne(() => User, (user) => user.evaluations)
+  @JoinColumn({ name: "evaluateeId" })
+  evaluatee?: User;
+
+  @Column({ type: "uuid" })
+  evaluatorId: string;
+
+  @ManyToOne(() => User)
+  @JoinColumn({ name: "evaluatorId" })
+  evaluator?: User;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, nullable: true })
+  overallSelfScore?: number;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, nullable: true })
+  overallManagerScore?: number;
+
+  @Column({ type: "decimal", precision: 5, scale: 2, nullable: true })
+  overallFinalScore?: number;
+
+  @Column({ type: "text", nullable: true })
+  selfSummary?: string;
+
+  @Column({ type: "text", nullable: true })
+  managerSummary?: string;
+
+  @Column({ type: "text", nullable: true })
+  hrComment?: string;
+
+  @OneToMany(() => EvaluationScore, (score) => score.evaluation, {
+    cascade: true,
+  })
+  scores?: EvaluationScore[];
+
+  /**
+   * KPIs included in this evaluation round.
+   * Supports both corporate KPIs (shared across users)
+   * and individual KPIs (specific to the evaluatee).
+   */
+  @ManyToMany(() => KPI, (kpi) => kpi.evaluations)
+  @JoinTable({
+    name: "evaluation_kpis",
+    joinColumn: { name: "evaluationId", referencedColumnName: "id" },
+    inverseJoinColumn: { name: "kpiId", referencedColumnName: "id" },
+  })
+  kpis?: KPI[];
+
+  @Column({ type: "uuid", nullable: true })
+  idpId?: string;
+
+  @ManyToOne(() => IDP, (idp) => idp.evaluations, { nullable: true })
+  @JoinColumn({ name: "idpId" })
+  idp?: IDP;
+
+  @Column({ type: "timestamp", nullable: true })
+  submittedAt?: Date;
+
+  @Column({ type: "timestamp", nullable: true })
+  completedAt?: Date;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
+
+@Entity("idp_actions")
+@Index(["idpId"])
+export class IDPAction implements IIDPAction {
+  @PrimaryGeneratedColumn("uuid")
+  id: string;
+
+  @Column({ type: "uuid" })
+  idpId: string;
+
+  @ManyToOne(() => IDP, (idp) => idp.actions)
+  @JoinColumn({ name: "idpId" })
+  idp?: IDP;
+
+  @Column({ type: "varchar", length: 255 })
+  title: string;
+
+  @Column({ type: "text", nullable: true })
+  description?: string;
+
+  @Column({
+    type: "enum",
+    enum: IDPActionStatus,
+    default: IDPActionStatus.NOT_STARTED,
+  })
+  status: IDPActionStatus;
+
+  @Column({ type: "date" })
+  targetDate: Date;
+
+  @Column({ type: "date", nullable: true })
+  completedDate?: Date;
+
+  @Column({ type: "text", nullable: true })
+  resources?: string;
+
+  @Column({ type: "text", nullable: true })
+  successCriteria?: string;
+
+  @Column({ type: "int", default: 0 })
+  progress: number;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
+
+@Entity("idps")
+@Index(["employeeId"])
+@Index(["managerId"])
+export class IDP implements IIDP {
+  @PrimaryGeneratedColumn("uuid")
+  id: string;
+
+  @Column({ type: "varchar", length: 255 })
+  title: string;
+
+  @Column({ type: "text", nullable: true })
+  description?: string;
+
+  @Column({ type: "enum", enum: IDPStatus, default: IDPStatus.DRAFT })
+  status: IDPStatus;
+
+  @Column({ type: "uuid" })
+  employeeId: string;
+
+  @ManyToOne(() => User, (user) => user.idps)
+  @JoinColumn({ name: "employeeId" })
+  employee?: User;
+
+  @Column({ type: "uuid" })
+  managerId: string;
+
+  @ManyToOne(() => User)
+  @JoinColumn({ name: "managerId" })
+  manager?: User;
+
+  @Column({ type: "text" })
+  developmentGoals: string;
+
+  @Column({ type: "text", nullable: true })
+  strengths?: string;
+
+  @Column({ type: "text", nullable: true })
+  areasForImprovement?: string;
+
+  @Column({ type: "date" })
+  startDate: Date;
+
+  @Column({ type: "date" })
+  targetDate: Date;
+
+  @Column({ type: "date", nullable: true })
+  completedDate?: Date;
+
+  @OneToMany(() => IDPAction, (action) => action.idp, { cascade: true })
+  actions?: IDPAction[];
+
+  @OneToMany(() => Evaluation, (evaluation) => evaluation.idp)
+  evaluations?: Evaluation[];
+
+  @Column({ type: "uuid", nullable: true })
+  linkedOkrId?: string;
+
+  @ManyToOne(() => OKR, { nullable: true })
+  @JoinColumn({ name: "linkedOkrId" })
+  linkedOkr?: OKR;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
