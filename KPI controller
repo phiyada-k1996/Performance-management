@@ -1,0 +1,616 @@
+import {
+  Controller,
+  Post,
+  Put,
+  Get,
+  Body,
+  Param,
+  Query,
+  ParseUUIDPipe,
+  HttpCode,
+  HttpStatus,
+  UseGuards,
+  Request,
+  BadRequestException,
+  NotFoundException,
+  ForbiddenException,
+  Logger,
+} from "@nestjs/common";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiQuery,
+  ApiParam,
+} from "@nestjs/swagger";
+import {
+  IsString,
+  IsEnum,
+  IsNumber,
+  IsOptional,
+  IsUUID,
+  IsDateString,
+  Min,
+  Max,
+  IsNotEmpty,
+  ValidateIf,
+} from "class-validator";
+import { Type } from "class-transformer";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository, Between } from "typeorm";
+import {
+  KPI,
+  KPIType,
+  KPIUnit,
+  User,
+  OKR,
+  KeyResult,
+} from "./performance-management-system";
+
+// ============================================================
+// DTOs
+// ============================================================
+
+export class CreateCorporateKPIDto {
+  @IsString()
+  @IsNotEmpty()
+  title: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  department: string;
+
+  @IsEnum(KPIUnit)
+  unit: KPIUnit;
+
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  targetValue: number;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  @Type(() => Number)
+  baselineValue?: number;
+
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  @Type(() => Number)
+  weight: number;
+
+  @IsDateString()
+  periodStart: string;
+
+  @IsDateString()
+  periodEnd: string;
+
+  @IsUUID()
+  @IsOptional()
+  okrId?: string;
+
+  @IsUUID()
+  @IsOptional()
+  keyResultId?: string;
+}
+
+export class CreateIndividualKPIDto {
+  @IsString()
+  @IsNotEmpty()
+  title: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsEnum(KPIUnit)
+  unit: KPIUnit;
+
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  targetValue: number;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  @Type(() => Number)
+  baselineValue?: number;
+
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  @Type(() => Number)
+  weight: number;
+
+  @IsDateString()
+  periodStart: string;
+
+  @IsDateString()
+  periodEnd: string;
+
+  @IsUUID()
+  @IsOptional()
+  ownerId?: string;
+
+  @IsUUID()
+  @IsOptional()
+  okrId?: string;
+
+  @IsUUID()
+  @IsOptional()
+  keyResultId?: string;
+}
+
+export class UpdateKPIActualValueDto {
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  actualValue: number;
+
+  @IsString()
+  @IsOptional()
+  comment?: string;
+}
+
+export class BulkSubmitKPIDto {
+  @IsUUID("4", { each: true })
+  kpiIds: string[];
+
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  actualValue: number;
+
+  @IsDateString()
+  @IsOptional()
+  asOfDate?: string;
+}
+
+export class KPIQueryDto {
+  @IsEnum(KPIType)
+  @IsOptional()
+  type?: KPIType;
+
+  @IsString()
+  @IsOptional()
+  department?: string;
+
+  @IsUUID()
+  @IsOptional()
+  ownerId?: string;
+
+  @IsUUID()
+  @IsOptional()
+  okrId?: string;
+
+  @IsDateString()
+  @IsOptional()
+  periodStart?: string;
+
+  @IsDateString()
+  @IsOptional()
+  periodEnd?: string;
+}
+
+export class KPIResponseDto {
+  id: string;
+  title: string;
+  description?: string;
+  type: KPIType;
+  unit: KPIUnit;
+  targetValue: number;
+  actualValue?: number;
+  baselineValue?: number;
+  weight: number;
+  department?: string;
+  achievement?: number;
+  periodStart: Date;
+  periodEnd: Date;
+  owner?: { id: string; firstName: string; lastName: string; corporateEmail: string };
+  okr?: { id: string; title: string };
+  keyResult?: { id: string; title: string };
+  createdAt: Date;
+  updatedAt: Date;
+
+  static fromEntity(kpi: KPI): KPIResponseDto {
+    const dto = new KPIResponseDto();
+    dto.id = kpi.id;
+    dto.title = kpi.title;
+    dto.description = kpi.description;
+    dto.type = kpi.type;
+    dto.unit = kpi.unit;
+    dto.targetValue = Number(kpi.targetValue);
+    dto.actualValue = kpi.actualValue !== undefined ? Number(kpi.actualValue) : undefined;
+    dto.baselineValue = kpi.baselineValue !== undefined ? Number(kpi.baselineValue) : undefined;
+    dto.weight = Number(kpi.weight);
+    dto.department = kpi.department;
+    dto.periodStart = kpi.periodStart;
+    dto.periodEnd = kpi.periodEnd;
+    dto.createdAt = kpi.createdAt;
+    dto.updatedAt = kpi.updatedAt;
+
+    if (kpi.actualValue !== undefined && kpi.targetValue) {
+      dto.achievement = Math.min(
+        parseFloat(((Number(kpi.actualValue) / Number(kpi.targetValue)) * 100).toFixed(2)),
+        100,
+      );
+    }
+
+    if (kpi.owner) {
+      dto.owner = {
+        id: kpi.owner.id,
+        firstName: kpi.owner.firstName,
+        lastName: kpi.owner.lastName,
+        corporateEmail: kpi.owner.corporateEmail,
+      };
+    }
+
+    if (kpi.okr) {
+      dto.okr = { id: kpi.okr.id, title: kpi.okr.title };
+    }
+
+    if (kpi.keyResult) {
+      dto.keyResult = { id: kpi.keyResult.id, title: kpi.keyResult.title };
+    }
+
+    return dto;
+  }
+}
+
+// ============================================================
+// GUARDS (stubs — replace with real implementations)
+// ============================================================
+
+import { Injectable, CanActivate, ExecutionContext } from "@nestjs/common";
+
+@Injectable()
+export class JwtAuthGuard implements CanActivate {
+  canActivate(context: ExecutionContext): boolean {
+    // Replace with real JWT validation
+    return true;
+  }
+}
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  canActivate(context: ExecutionContext): boolean {
+    // Replace with real role checking
+    return true;
+  }
+}
+
+// ============================================================
+// SERVICE
+// ============================================================
+
+@Injectable()
+export class KPIService {
+  private readonly logger = new Logger(KPIService.name);
+
+  constructor(
+    @InjectRepository(KPI)
+    private readonly kpiRepository: Repository<KPI>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+    @InjectRepository(OKR)
+    private readonly okrRepository: Repository<OKR>,
+    @InjectRepository(KeyResult)
+    private readonly keyResultRepository: Repository<KeyResult>,
+  ) {}
+
+  async createCorporateKPI(dto: CreateCorporateKPIDto): Promise<KPI> {
+    const kpi = this.kpiRepository.create({
+      ...dto,
+      type: KPIType.CORPORATE,
+      periodStart: new Date(dto.periodStart),
+      periodEnd: new Date(dto.periodEnd),
+    });
+
+    if (dto.okrId) {
+      const okr = await this.okrRepository.findOne({ where: { id: dto.okrId } });
+      if (!okr) throw new NotFoundException(`OKR ${dto.okrId} not found`);
+      kpi.okrId = okr.id;
+    }
+
+    if (dto.keyResultId) {
+      const kr = await this.keyResultRepository.findOne({ where: { id: dto.keyResultId } });
+      if (!kr) throw new NotFoundException(`KeyResult ${dto.keyResultId} not found`);
+      if (dto.okrId && kr.okrId !== dto.okrId) {
+        throw new BadRequestException("KeyResult does not belong to the specified OKR");
+      }
+      kpi.keyResultId = kr.id;
+    }
+
+    return this.kpiRepository.save(kpi);
+  }
+
+  async createIndividualKPI(dto: CreateIndividualKPIDto, requesterId: string): Promise<KPI> {
+    const targetOwnerId = dto.ownerId ?? requesterId;
+
+    const owner = await this.userRepository.findOne({ where: { id: targetOwnerId } });
+    if (!owner) throw new NotFoundException(`User ${targetOwnerId} not found`);
+
+    const kpi = this.kpiRepository.create({
+      ...dto,
+      type: KPIType.INDIVIDUAL,
+      ownerId: targetOwnerId,
+      periodStart: new Date(dto.periodStart),
+      periodEnd: new Date(dto.periodEnd),
+    });
+
+    if (dto.okrId) {
+      const okr = await this.okrRepository.findOne({ where: { id: dto.okrId } });
+      if (!okr) throw new NotFoundException(`OKR ${dto.okrId} not found`);
+      if (okr.ownerId !== targetOwnerId) {
+        throw new ForbiddenException("OKR does not belong to the KPI owner");
+      }
+      kpi.okrId = okr.id;
+    }
+
+    if (dto.keyResultId) {
+      const kr = await this.keyResultRepository.findOne({ where: { id: dto.keyResultId } });
+      if (!kr) throw new NotFoundException(`KeyResult ${dto.keyResultId} not found`);
+      kpi.keyResultId = kr.id;
+    }
+
+    return this.kpiRepository.save(kpi);
+  }
+
+  async submitActualValue(
+    kpiId: string,
+    dto: UpdateKPIActualValueDto,
+    requesterId: string,
+  ): Promise<KPI> {
+    const kpi = await this.kpiRepository.findOne({
+      where: { id: kpiId },
+      relations: ["owner"],
+    });
+
+    if (!kpi) throw new NotFoundException(`KPI ${kpiId} not found`);
+
+    if (kpi.type === KPIType.INDIVIDUAL && kpi.ownerId !== requesterId) {
+      const requester = await this.userRepository.findOne({ where: { id: requesterId } });
+      const isManager = requester && kpi.owner?.managerId === requesterId;
+      if (!isManager) {
+        throw new ForbiddenException("You can only update your own KPIs");
+      }
+    }
+
+    kpi.actualValue = dto.actualValue;
+    return this.kpiRepository.save(kpi);
+  }
+
+  async bulkSubmitActualValues(dto: BulkSubmitKPIDto, requesterId: string): Promise<KPI[]> {
+    const kpis = await this.kpiRepository.findByIds(dto.kpiIds, { relations: ["owner"] });
+
+    if (kpis.length !== dto.kpiIds.length) {
+      const found = kpis.map((k) => k.id);
+      const missing = dto.kpiIds.filter((id) => !found.includes(id));
+      throw new NotFoundException(`KPIs not found: ${missing.join(", ")}`);
+    }
+
+    for (const kpi of kpis) {
+      if (kpi.type === KPIType.INDIVIDUAL && kpi.ownerId !== requesterId) {
+        throw new ForbiddenException(`Not authorized to update KPI ${kpi.id}`);
+      }
+      kpi.actualValue = dto.actualValue;
+    }
+
+    return this.kpiRepository.save(kpis);
+  }
+
+  async findAll(query: KPIQueryDto): Promise<KPI[]> {
+    const where: Record<string, unknown> = {};
+
+    if (query.type) where.type = query.type;
+    if (query.department) where.department = query.department;
+    if (query.ownerId) where.ownerId = query.ownerId;
+    if (query.okrId) where.okrId = query.okrId;
+
+    if (query.periodStart && query.periodEnd) {
+      where.periodStart = Between(new Date(query.periodStart), new Date(query.periodEnd));
+    }
+
+    return this.kpiRepository.find({
+      where,
+      relations: ["owner", "okr", "keyResult"],
+      order: { createdAt: "DESC" },
+    });
+  }
+
+  async findOne(id: string): Promise<KPI> {
+    const kpi = await this.kpiRepository.findOne({
+      where: { id },
+      relations: ["owner", "okr", "keyResult", "evaluations"],
+    });
+    if (!kpi) throw new NotFoundException(`KPI ${id} not found`);
+    return kpi;
+  }
+
+  async findByOKR(okrId: string): Promise<KPI[]> {
+    const okr = await this.okrRepository.findOne({ where: { id: okrId } });
+    if (!okr) throw new NotFoundException(`OKR ${okrId} not found`);
+
+    return this.kpiRepository.find({
+      where: { okrId },
+      relations: ["owner", "keyResult"],
+      order: { type: "ASC", weight: "DESC" },
+    });
+  }
+
+  async findByKeyResult(keyResultId: string): Promise<KPI[]> {
+    const kr = await this.keyResultRepository.findOne({ where: { id: keyResultId } });
+    if (!kr) throw new NotFoundException(`KeyResult ${keyResultId} not found`);
+
+    return this.kpiRepository.find({
+      where: { keyResultId },
+      relations: ["owner", "okr"],
+    });
+  }
+}
+
+// ============================================================
+// CONTROLLER
+// ============================================================
+
+@ApiTags("KPIs")
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Controller("api/v1/kpis")
+export class KPIController {
+  private readonly logger = new Logger(KPIController.name);
+
+  constructor(private readonly kpiService: KPIService) {}
+
+  // ----------------------------------------------------------
+  // POST /api/v1/kpis/corporate
+  // ----------------------------------------------------------
+  @Post("corporate")
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: "Create a Corporate KPI (department-level, no individual owner)" })
+  @ApiResponse({ status: 201, description: "Corporate KPI created" })
+  @ApiResponse({ status: 400, description: "Validation error" })
+  async createCorporateKPI(
+    @Body() dto: CreateCorporateKPIDto,
+  ): Promise<KPIResponseDto> {
+    this.logger.log(`Creating corporate KPI: ${dto.title}`);
+    const kpi = await this.kpiService.createCorporateKPI(dto);
+    return KPIResponseDto.fromEntity(kpi);
+  }
+
+  // ----------------------------------------------------------
+  // POST /api/v1/kpis/individual
+  // ----------------------------------------------------------
+  @Post("individual")
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: "Create an Individual KPI (linked to a specific employee)",
+  })
+  @ApiResponse({ status: 201, description: "Individual KPI created" })
+  async createIndividualKPI(
+    @Body() dto: CreateIndividualKPIDto,
+    @Request() req: { user: { id: string } },
+  ): Promise<KPIResponseDto> {
+    this.logger.log(`Creating individual KPI for owner: ${dto.ownerId ?? req.user.id}`);
+    const kpi = await this.kpiService.createIndividualKPI(dto, req.user.id);
+    return KPIResponseDto.fromEntity(kpi);
+  }
+
+  // ----------------------------------------------------------
+  // GET /api/v1/kpis
+  // ----------------------------------------------------------
+  @Get()
+  @ApiOperation({ summary: "List KPIs with optional filters" })
+  @ApiQuery({ name: "type", enum: KPIType, required: false })
+  @ApiQuery({ name: "department", required: false })
+  @ApiQuery({ name: "ownerId", required: false })
+  @ApiQuery({ name: "okrId", required: false })
+  @ApiQuery({ name: "periodStart", required: false })
+  @ApiQuery({ name: "periodEnd", required: false })
+  async findAll(@Query() query: KPIQueryDto): Promise<KPIResponseDto[]> {
+    const kpis = await this.kpiService.findAll(query);
+    return kpis.map(KPIResponseDto.fromEntity);
+  }
+
+  // ----------------------------------------------------------
+  // GET /api/v1/kpis/:id
+  // ----------------------------------------------------------
+  @Get(":id")
+  @ApiOperation({ summary: "Get a single KPI by ID" })
+  @ApiParam({ name: "id", type: "string", format: "uuid" })
+  async findOne(@Param("id", ParseUUIDPipe) id: string): Promise<KPIResponseDto> {
+    const kpi = await this.kpiService.findOne(id);
+    return KPIResponseDto.fromEntity(kpi);
+  }
+
+  // ----------------------------------------------------------
+  // GET /api/v1/kpis/okr/:okrId
+  // ----------------------------------------------------------
+  @Get("okr/:okrId")
+  @ApiOperation({
+    summary: "Get all KPIs linked to an OKR (corporate + individual)",
+  })
+  @ApiParam({ name: "okrId", type: "string", format: "uuid" })
+  async findByOKR(
+    @Param("okrId", ParseUUIDPipe) okrId: string,
+  ): Promise<KPIResponseDto[]> {
+    const kpis = await this.kpiService.findByOKR(okrId);
+    return kpis.map(KPIResponseDto.fromEntity);
+  }
+
+  // ----------------------------------------------------------
+  // GET /api/v1/kpis/key-result/:keyResultId
+  // ----------------------------------------------------------
+  @Get("key-result/:keyResultId")
+  @ApiOperation({ summary: "Get all KPIs linked to a specific Key Result" })
+  @ApiParam({ name: "keyResultId", type: "string", format: "uuid" })
+  async findByKeyResult(
+    @Param("keyResultId", ParseUUIDPipe) keyResultId: string,
+  ): Promise<KPIResponseDto[]> {
+    const kpis = await this.kpiService.findByKeyResult(keyResultId);
+    return kpis.map(KPIResponseDto.fromEntity);
+  }
+
+  // ----------------------------------------------------------
+  // PUT /api/v1/kpis/:id/submit
+  // ----------------------------------------------------------
+  @Put(":id/submit")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Submit actual value for a KPI (self or manager update)",
+  })
+  @ApiParam({ name: "id", type: "string", format: "uuid" })
+  @ApiResponse({ status: 200, description: "Actual value submitted" })
+  @ApiResponse({ status: 403, description: "Forbidden — not the KPI owner or manager" })
+  async submitActualValue(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateKPIActualValueDto,
+    @Request() req: { user: { id: string } },
+  ): Promise<KPIResponseDto> {
+    this.logger.log(`Submitting actual value for KPI ${id} by user ${req.user.id}`);
+    const kpi = await this.kpiService.submitActualValue(id, dto, req.user.id);
+    return KPIResponseDto.fromEntity(kpi);
+  }
+
+  // ----------------------------------------------------------
+  // POST /api/v1/kpis/bulk-submit
+  // ----------------------------------------------------------
+  @Post("bulk-submit")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Submit the same actual value to multiple KPIs at once",
+  })
+  @ApiResponse({ status: 200, description: "Bulk submission successful" })
+  async bulkSubmit(
+    @Body() dto: BulkSubmitKPIDto,
+    @Request() req: { user: { id: string } },
+  ): Promise<KPIResponseDto[]> {
+    this.logger.log(
+      `Bulk submitting actual value for ${dto.kpiIds.length} KPIs by user ${req.user.id}`,
+    );
+    const kpis = await this.kpiService.bulkSubmitActualValues(dto, req.user.id);
+    return kpis.map(KPIResponseDto.fromEntity);
+  }
+}
+
+// ============================================================
+// MODULE
+// ============================================================
+
+import { Module } from "@nestjs/common";
+import { TypeOrmModule } from "@nestjs/typeorm";
+
+@Module({
+  imports: [TypeOrmModule.forFeature([KPI, User, OKR, KeyResult])],
+  controllers: [KPIController],
+  providers: [KPIService, JwtAuthGuard, RolesGuard],
+  exports: [KPIService],
+})
+export class KPIModule {}
