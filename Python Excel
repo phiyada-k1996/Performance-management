@@ -1,0 +1,808 @@
+from __future__ import annotations
+
+import io
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from enum import Enum
+from typing import Any, Optional
+
+from openpyxl import Workbook
+from openpyxl.chart import BarChart, Reference
+from openpyxl.styles import (
+    Alignment,
+    Border,
+    Font,
+    PatternFill,
+    Side,
+)
+from openpyxl.utils import get_column_letter
+
+
+# ============================================================
+# ENUMS (mirror TypeScript)
+# ============================================================
+
+class KPIType(str, Enum):
+    CORPORATE = "corporate"
+    INDIVIDUAL = "individual"
+
+
+class KPIUnit(str, Enum):
+    PERCENTAGE = "percentage"
+    NUMBER = "number"
+    CURRENCY = "currency"
+    BOOLEAN = "boolean"
+    SCORE = "score"
+
+
+# ============================================================
+# DATA CLASSES (mirror TypeScript interfaces)
+# ============================================================
+
+@dataclass
+class UserSummary:
+    id: str
+    first_name: str
+    last_name: str
+    corporate_email: str
+    department: str = ""
+
+    @property
+    def full_name(self) -> str:
+        return f"{self.first_name} {self.last_name}"
+
+
+@dataclass
+class OKRSummary:
+    id: str
+    title: str
+
+
+@dataclass
+class KeyResultSummary:
+    id: str
+    title: str
+
+
+@dataclass
+class KPIRecord:
+    id: str
+    title: str
+    type: KPIType
+    unit: KPIUnit
+    target_value: float
+    weight: float
+    period_start: date
+    period_end: date
+    description: str = ""
+    department: str = ""
+    actual_value: Optional[float] = None
+    baseline_value: Optional[float] = None
+    owner: Optional[UserSummary] = None
+    okr: Optional[OKRSummary] = None
+    key_result: Optional[KeyResultSummary] = None
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+
+    @property
+    def achievement(self) -> Optional[float]:
+        if self.actual_value is not None and self.target_value:
+            return min(round((self.actual_value / self.target_value) * 100, 2), 100.0)
+        return None
+
+    def format_value(self, value: Optional[float]) -> str:
+        if value is None:
+            return "—"
+        match self.unit:
+            case KPIUnit.PERCENTAGE:
+                return f"{value:.1f}%"
+            case KPIUnit.CURRENCY:
+                return f"${value:,.2f}"
+            case KPIUnit.BOOLEAN:
+                return "Yes" if value else "No"
+            case _:
+                return f"{value:,.4g}"
+
+
+# ============================================================
+# STYLE HELPERS
+# ============================================================
+
+def _font(bold: bool = False, size: int = 10, color: str = "000000") -> Font:
+    return Font(name="Arial", bold=bold, size=size, color=color)
+
+
+def _fill(hex_color: str) -> PatternFill:
+    return PatternFill("solid", fgColor=hex_color)
+
+
+def _border(
+    style: str = "thin",
+    color: str = "BFBFBF",
+) -> Border:
+    side = Side(style=style, color=color)
+    return Border(left=side, right=side, top=side, bottom=side)
+
+
+def _center() -> Alignment:
+    return Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+
+def _left() -> Alignment:
+    return Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+
+HEADER_FILL = _fill("1F4E79")
+HEADER_FONT = _font(bold=True, size=10, color="FFFFFF")
+
+SUBHEADER_FILL = _fill("2E75B6")
+SUBHEADER_FONT = _font(bold=True, size=10, color="FFFFFF")
+
+CORPORATE_FILL = _fill("DEEAF1")
+INDIVIDUAL_FILL = _fill("E2EFDA")
+
+ACHIEVED_FILL = _fill("C6EFCE")
+AT_RISK_FILL = _fill("FFEB9C")
+BEHIND_FILL = _fill("FFC7CE")
+
+ROW_ALT_FILL = _fill("F5F5F5")
+TITLE_FONT = _font(bold=True, size=14, color="1F4E79")
+SECTION_FONT = _font(bold=True, size=11, color="2E75B6")
+THIN_BORDER = _border()
+
+
+def _achievement_fill(achievement: Optional[float]) -> Optional[PatternFill]:
+    if achievement is None:
+        return None
+    if achievement >= 100:
+        return ACHIEVED_FILL
+    if achievement >= 70:
+        return AT_RISK_FILL
+    return BEHIND_FILL
+
+
+def _apply_row_style(
+    ws,
+    row: int,
+    start_col: int,
+    end_col: int,
+    fill: Optional[PatternFill] = None,
+    font: Optional[Font] = None,
+    alignment: Optional[Alignment] = None,
+    border: Optional[Border] = None,
+) -> None:
+    for col in range(start_col, end_col + 1):
+        cell = ws.cell(row=row, column=col)
+        if fill:
+            cell.fill = fill
+        if font:
+            cell.font = font
+        if alignment:
+            cell.alignment = alignment
+        if border:
+            cell.border = border
+
+
+def _write_header_row(ws, row: int, headers: list[str], col_start: int = 1) -> None:
+    for i, h in enumerate(headers, start=col_start):
+        cell = ws.cell(row=row, column=i, value=h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = _center()
+        cell.border = THIN_BORDER
+
+
+# ============================================================
+# SHEET 1 — OVERVIEW (all KPIs)
+# ============================================================
+
+_OVERVIEW_HEADERS = [
+    "KPI ID",
+    "Title",
+    "Type",
+    "Department / Owner",
+    "Unit",
+    "Linked OKR",
+    "Linked Key Result",
+    "Target",
+    "Actual",
+    "Achievement (%)",
+    "Weight (%)",
+    "Period Start",
+    "Period End",
+    "Status",
+]
+
+_OVERVIEW_WIDTHS = [10, 38, 12, 28, 12, 30, 30, 12, 12, 14, 10, 14, 14, 12]
+
+
+def _build_overview_sheet(ws, kpis: list[KPIRecord]) -> None:
+    ws.title = "KPI Overview"
+    ws.freeze_panes = "A3"
+    ws.row_dimensions[1].height = 20
+    ws.row_dimensions[2].height = 40
+
+    # Title row
+    ws.merge_cells("A1:N1")
+    title_cell = ws["A1"]
+    title_cell.value = f"KPI Performance Report — Exported {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+    title_cell.font = TITLE_FONT
+    title_cell.alignment = _center()
+    title_cell.fill = _fill("DEEAF1")
+
+    _write_header_row(ws, 2, _OVERVIEW_HEADERS)
+
+    for i, kpi in enumerate(kpis, start=1):
+        row = i + 2
+        alt = i % 2 == 0
+
+        owner_label = (
+            kpi.owner.full_name if kpi.owner else kpi.department or "—"
+        )
+        achievement = kpi.achievement
+
+        row_data: list[Any] = [
+            kpi.id[:8] + "…",
+            kpi.title,
+            kpi.type.value.capitalize(),
+            owner_label,
+            kpi.unit.value.capitalize(),
+            kpi.okr.title if kpi.okr else "—",
+            kpi.key_result.title if kpi.key_result else "—",
+            kpi.format_value(kpi.target_value),
+            kpi.format_value(kpi.actual_value),
+            f"{achievement:.1f}%" if achievement is not None else "—",
+            f"{kpi.weight:.1f}%",
+            kpi.period_start.strftime("%Y-%m-%d"),
+            kpi.period_end.strftime("%Y-%m-%d"),
+            _status_label(achievement),
+        ]
+
+        base_fill = CORPORATE_FILL if kpi.type == KPIType.CORPORATE else INDIVIDUAL_FILL
+        row_fill = ROW_ALT_FILL if alt else None
+
+        for col, value in enumerate(row_data, start=1):
+            cell = ws.cell(row=row, column=col, value=value)
+            cell.font = _font(size=10)
+            cell.border = THIN_BORDER
+            cell.fill = row_fill or base_fill
+            cell.alignment = _center() if col in (1, 3, 5, 10, 11, 14) else _left()
+
+        # Color-code achievement cell
+        ach_fill = _achievement_fill(achievement)
+        if ach_fill:
+            ws.cell(row=row, column=10).fill = ach_fill
+
+        ws.row_dimensions[row].height = 18
+
+    for col, width in enumerate(_OVERVIEW_WIDTHS, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+    # Auto-filter
+    ws.auto_filter.ref = f"A2:{get_column_letter(len(_OVERVIEW_HEADERS))}2"
+
+
+def _status_label(achievement: Optional[float]) -> str:
+    if achievement is None:
+        return "Not Submitted"
+    if achievement >= 100:
+        return "Achieved"
+    if achievement >= 70:
+        return "At Risk"
+    return "Behind"
+
+
+# ============================================================
+# SHEET 2 — CORPORATE KPIs
+# ============================================================
+
+_CORP_HEADERS = [
+    "Title",
+    "Department",
+    "Unit",
+    "Linked OKR",
+    "Linked Key Result",
+    "Target",
+    "Actual",
+    "Achievement (%)",
+    "Weight (%)",
+    "Period",
+]
+
+_CORP_WIDTHS = [38, 24, 12, 34, 34, 12, 12, 14, 10, 22]
+
+
+def _build_corporate_sheet(ws, kpis: list[KPIRecord]) -> None:
+    ws.title = "Corporate KPIs"
+    ws.freeze_panes = "A3"
+    ws.row_dimensions[2].height = 36
+
+    ws.merge_cells(f"A1:{get_column_letter(len(_CORP_HEADERS))}1")
+    hdr = ws["A1"]
+    hdr.value = "Corporate KPIs"
+    hdr.font = SECTION_FONT
+    hdr.fill = SUBHEADER_FILL
+    hdr.font = _font(bold=True, size=12, color="FFFFFF")
+    hdr.alignment = _center()
+
+    _write_header_row(ws, 2, _CORP_HEADERS)
+
+    corp_kpis = [k for k in kpis if k.type == KPIType.CORPORATE]
+
+    # Group by department
+    departments: dict[str, list[KPIRecord]] = {}
+    for k in corp_kpis:
+        departments.setdefault(k.department or "General", []).append(k)
+
+    row = 3
+    for dept, dept_kpis in sorted(departments.items()):
+        # Department sub-header
+        ws.merge_cells(f"A{row}:{get_column_letter(len(_CORP_HEADERS))}{row}")
+        dept_cell = ws.cell(row=row, column=1, value=f"▸  {dept}")
+        dept_cell.font = _font(bold=True, size=10, color="1F4E79")
+        dept_cell.fill = _fill("D9E2F3")
+        dept_cell.alignment = _left()
+        dept_cell.border = THIN_BORDER
+        ws.row_dimensions[row].height = 18
+        row += 1
+
+        for i, kpi in enumerate(dept_kpis):
+            alt = i % 2 == 0
+            achievement = kpi.achievement
+
+            row_data: list[Any] = [
+                kpi.title,
+                kpi.department or "—",
+                kpi.unit.value.capitalize(),
+                kpi.okr.title if kpi.okr else "—",
+                kpi.key_result.title if kpi.key_result else "—",
+                kpi.format_value(kpi.target_value),
+                kpi.format_value(kpi.actual_value),
+                f"{achievement:.1f}%" if achievement is not None else "—",
+                f"{kpi.weight:.1f}%",
+                f"{kpi.period_start.strftime('%Y-%m-%d')} → {kpi.period_end.strftime('%Y-%m-%d')}",
+            ]
+
+            for col, value in enumerate(row_data, start=1):
+                cell = ws.cell(row=row, column=col, value=value)
+                cell.font = _font(size=10)
+                cell.border = THIN_BORDER
+                cell.fill = ROW_ALT_FILL if alt else CORPORATE_FILL
+                cell.alignment = _center() if col in (3, 8, 9) else _left()
+
+            ach_fill = _achievement_fill(achievement)
+            if ach_fill:
+                ws.cell(row=row, column=8).fill = ach_fill
+
+            ws.row_dimensions[row].height = 18
+            row += 1
+
+    for col, width in enumerate(_CORP_WIDTHS, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+# ============================================================
+# SHEET 3 — INDIVIDUAL KPIs
+# ============================================================
+
+_IND_HEADERS = [
+    "Employee",
+    "Email",
+    "KPI Title",
+    "Unit",
+    "Linked OKR",
+    "Linked Key Result",
+    "Target",
+    "Actual",
+    "Achievement (%)",
+    "Weight (%)",
+    "Period",
+]
+
+_IND_WIDTHS = [24, 34, 38, 12, 30, 30, 12, 12, 14, 10, 22]
+
+
+def _build_individual_sheet(ws, kpis: list[KPIRecord]) -> None:
+    ws.title = "Individual KPIs"
+    ws.freeze_panes = "A3"
+    ws.row_dimensions[2].height = 36
+
+    ws.merge_cells(f"A1:{get_column_letter(len(_IND_HEADERS))}1")
+    hdr = ws["A1"]
+    hdr.value = "Individual KPIs"
+    hdr.font = _font(bold=True, size=12, color="FFFFFF")
+    hdr.fill = _fill("375623")
+    hdr.alignment = _center()
+
+    _write_header_row(ws, 2, _IND_HEADERS)
+
+    ind_kpis = [k for k in kpis if k.type == KPIType.INDIVIDUAL]
+
+    # Group by owner
+    by_owner: dict[str, list[KPIRecord]] = {}
+    for k in ind_kpis:
+        label = k.owner.full_name if k.owner else "Unknown"
+        by_owner.setdefault(label, []).append(k)
+
+    row = 3
+    for owner_name, owner_kpis in sorted(by_owner.items()):
+        ws.merge_cells(f"A{row}:{get_column_letter(len(_IND_HEADERS))}{row}")
+        grp_cell = ws.cell(row=row, column=1, value=f"▸  {owner_name}")
+        grp_cell.font = _font(bold=True, size=10, color="375623")
+        grp_cell.fill = _fill("D9EAD3")
+        grp_cell.alignment = _left()
+        grp_cell.border = THIN_BORDER
+        ws.row_dimensions[row].height = 18
+        row += 1
+
+        for i, kpi in enumerate(owner_kpis):
+            alt = i % 2 == 0
+            achievement = kpi.achievement
+
+            row_data: list[Any] = [
+                kpi.owner.full_name if kpi.owner else "—",
+                kpi.owner.corporate_email if kpi.owner else "—",
+                kpi.title,
+                kpi.unit.value.capitalize(),
+                kpi.okr.title if kpi.okr else "—",
+                kpi.key_result.title if kpi.key_result else "—",
+                kpi.format_value(kpi.target_value),
+                kpi.format_value(kpi.actual_value),
+                f"{achievement:.1f}%" if achievement is not None else "—",
+                f"{kpi.weight:.1f}%",
+                f"{kpi.period_start.strftime('%Y-%m-%d')} → {kpi.period_end.strftime('%Y-%m-%d')}",
+            ]
+
+            for col, value in enumerate(row_data, start=1):
+                cell = ws.cell(row=row, column=col, value=value)
+                cell.font = _font(size=10)
+                cell.border = THIN_BORDER
+                cell.fill = ROW_ALT_FILL if alt else INDIVIDUAL_FILL
+                cell.alignment = _center() if col in (4, 9, 10) else _left()
+
+            ach_fill = _achievement_fill(achievement)
+            if ach_fill:
+                ws.cell(row=row, column=9).fill = ach_fill
+
+            ws.row_dimensions[row].height = 18
+            row += 1
+
+    for col, width in enumerate(_IND_WIDTHS, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+# ============================================================
+# SHEET 4 — OKR → KPI ALIGNMENT
+# ============================================================
+
+def _build_alignment_sheet(ws, kpis: list[KPIRecord]) -> None:
+    ws.title = "OKR–KPI Alignment"
+    ws.freeze_panes = "A3"
+    ws.row_dimensions[2].height = 36
+
+    headers = ["OKR", "Key Result", "KPI Title", "Type", "Owner / Dept", "Target", "Actual", "Achievement (%)"]
+    widths = [38, 34, 38, 12, 28, 12, 12, 14]
+
+    ws.merge_cells(f"A1:{get_column_letter(len(headers))}1")
+    t = ws["A1"]
+    t.value = "OKR → Key Result → KPI Alignment"
+    t.font = _font(bold=True, size=12, color="FFFFFF")
+    t.fill = _fill("7030A0")
+    t.alignment = _center()
+
+    _write_header_row(ws, 2, headers)
+
+    linked = [k for k in kpis if k.okr]
+    unlinked = [k for k in kpis if not k.okr]
+
+    by_okr: dict[str, list[KPIRecord]] = {}
+    for k in linked:
+        by_okr.setdefault(k.okr.title, []).append(k)  # type: ignore[union-attr]
+
+    row = 3
+    for okr_title, okr_kpis in sorted(by_okr.items()):
+        ws.merge_cells(f"A{row}:{get_column_letter(len(headers))}{row}")
+        cell = ws.cell(row=row, column=1, value=f"OKR: {okr_title}")
+        cell.font = _font(bold=True, size=10, color="FFFFFF")
+        cell.fill = _fill("7030A0")
+        cell.alignment = _left()
+        cell.border = THIN_BORDER
+        ws.row_dimensions[row].height = 18
+        row += 1
+
+        for i, kpi in enumerate(okr_kpis):
+            alt = i % 2 == 0
+            achievement = kpi.achievement
+            owner_label = kpi.owner.full_name if kpi.owner else kpi.department or "—"
+
+            row_data: list[Any] = [
+                kpi.okr.title if kpi.okr else "—",
+                kpi.key_result.title if kpi.key_result else "—",
+                kpi.title,
+                kpi.type.value.capitalize(),
+                owner_label,
+                kpi.format_value(kpi.target_value),
+                kpi.format_value(kpi.actual_value),
+                f"{achievement:.1f}%" if achievement is not None else "—",
+            ]
+
+            for col, value in enumerate(row_data, start=1):
+                cell = ws.cell(row=row, column=col, value=value)
+                cell.font = _font(size=10)
+                cell.border = THIN_BORDER
+                cell.fill = ROW_ALT_FILL if alt else _fill("EDE7F6")
+                cell.alignment = _left()
+
+            ach_fill = _achievement_fill(achievement)
+            if ach_fill:
+                ws.cell(row=row, column=8).fill = ach_fill
+
+            ws.row_dimensions[row].height = 18
+            row += 1
+
+    if unlinked:
+        ws.merge_cells(f"A{row}:{get_column_letter(len(headers))}{row}")
+        u = ws.cell(row=row, column=1, value="KPIs without OKR linkage")
+        u.font = _font(bold=True, size=10, color="595959")
+        u.fill = _fill("D9D9D9")
+        u.alignment = _left()
+        u.border = THIN_BORDER
+        ws.row_dimensions[row].height = 18
+        row += 1
+
+        for kpi in unlinked:
+            owner_label = kpi.owner.full_name if kpi.owner else kpi.department or "—"
+            for col, value in enumerate(
+                ["—", "—", kpi.title, kpi.type.value.capitalize(), owner_label,
+                 kpi.format_value(kpi.target_value), kpi.format_value(kpi.actual_value), "—"],
+                start=1,
+            ):
+                cell = ws.cell(row=row, column=col, value=value)
+                cell.font = _font(size=10, color="595959")
+                cell.border = THIN_BORDER
+                cell.alignment = _left()
+            row += 1
+
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+# ============================================================
+# SHEET 5 — SUMMARY / CHART DATA
+# ============================================================
+
+def _build_summary_sheet(ws, kpis: list[KPIRecord]) -> None:
+    ws.title = "Summary"
+
+    def _section_title(row: int, text: str) -> None:
+        ws.merge_cells(f"A{row}:F{row}")
+        c = ws.cell(row=row, column=1, value=text)
+        c.font = _font(bold=True, size=11, color="1F4E79")
+        c.fill = _fill("DEEAF1")
+        c.alignment = _left()
+        c.border = THIN_BORDER
+        ws.row_dimensions[row].height = 20
+
+    # --- KPI count by type ---
+    _section_title(1, "KPI Count by Type")
+    for col, h in enumerate(["Type", "Count"], start=1):
+        cell = ws.cell(row=2, column=col, value=h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.border = THIN_BORDER
+        cell.alignment = _center()
+
+    type_summary = {
+        KPIType.CORPORATE: sum(1 for k in kpis if k.type == KPIType.CORPORATE),
+        KPIType.INDIVIDUAL: sum(1 for k in kpis if k.type == KPIType.INDIVIDUAL),
+    }
+    for i, (kpi_type, count) in enumerate(type_summary.items(), start=3):
+        ws.cell(row=i, column=1, value=kpi_type.value.capitalize()).border = THIN_BORDER
+        ws.cell(row=i, column=2, value=count).border = THIN_BORDER
+
+    # --- Achievement distribution ---
+    _section_title(6, "Achievement Distribution")
+    for col, h in enumerate(["Status", "Count"], start=1):
+        cell = ws.cell(row=7, column=col, value=h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.border = THIN_BORDER
+        cell.alignment = _center()
+
+    achieved = sum(1 for k in kpis if k.achievement is not None and k.achievement >= 100)
+    at_risk   = sum(1 for k in kpis if k.achievement is not None and 70 <= k.achievement < 100)
+    behind    = sum(1 for k in kpis if k.achievement is not None and k.achievement < 70)
+    no_data   = sum(1 for k in kpis if k.achievement is None)
+
+    dist = [("Achieved (≥100%)", achieved), ("At Risk (70–99%)", at_risk),
+            ("Behind (<70%)", behind), ("Not Submitted", no_data)]
+    fills = [ACHIEVED_FILL, AT_RISK_FILL, BEHIND_FILL, _fill("D9D9D9")]
+
+    for i, ((label, count), fill) in enumerate(zip(dist, fills), start=8):
+        c1 = ws.cell(row=i, column=1, value=label)
+        c2 = ws.cell(row=i, column=2, value=count)
+        for c in (c1, c2):
+            c.fill = fill
+            c.border = THIN_BORDER
+            c.font = _font(size=10)
+
+    # --- Bar chart ---
+    chart = BarChart()
+    chart.type = "col"
+    chart.title = "KPI Achievement Distribution"
+    chart.y_axis.title = "Count"
+    chart.x_axis.title = "Status"
+    chart.style = 10
+    chart.width = 16
+    chart.height = 10
+
+    data_ref = Reference(ws, min_col=2, min_row=7, max_row=11)
+    cats_ref = Reference(ws, min_col=1, min_row=8, max_row=11)
+    chart.add_data(data_ref, titles_from_data=True)
+    chart.set_categories(cats_ref)
+    ws.add_chart(chart, "D2")
+
+    # --- Average achievement by department ---
+    _section_title(14, "Average Achievement by Department")
+    for col, h in enumerate(["Department", "KPI Count", "Avg Achievement (%)"], start=1):
+        cell = ws.cell(row=15, column=col, value=h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.border = THIN_BORDER
+        cell.alignment = _center()
+
+    dept_data: dict[str, list[float]] = {}
+    for k in kpis:
+        dept = k.department or (k.owner.department if k.owner else "Unknown") or "Unknown"
+        if k.achievement is not None:
+            dept_data.setdefault(dept, []).append(k.achievement)
+
+    for i, (dept, achievements) in enumerate(sorted(dept_data.items()), start=16):
+        avg = round(sum(achievements) / len(achievements), 2) if achievements else 0
+        ws.cell(row=i, column=1, value=dept).border = THIN_BORDER
+        ws.cell(row=i, column=2, value=len(achievements)).border = THIN_BORDER
+        ws.cell(row=i, column=3, value=f"{avg:.1f}%").border = THIN_BORDER
+
+    for col, width in zip(range(1, 7), [28, 12, 22, 14, 14, 14]):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+# ============================================================
+# MAIN EXPORT FUNCTION
+# ============================================================
+
+def export_kpis_to_excel(
+    kpis: list[KPIRecord],
+    output_path: Optional[str] = None,
+) -> bytes:
+    """
+    Export a list of KPIRecord objects to a formatted Excel workbook.
+
+    Sheets:
+      1. KPI Overview      — all KPIs in a single filterable table
+      2. Corporate KPIs    — department-grouped corporate KPIs
+      3. Individual KPIs   — employee-grouped individual KPIs
+      4. OKR–KPI Alignment — OKR → KeyResult → KPI hierarchy
+      5. Summary           — counts, achievement distribution, bar chart
+
+    Args:
+        kpis:        List of KPIRecord data objects.
+        output_path: If provided, saves the file to disk; otherwise returns raw bytes.
+
+    Returns:
+        The Excel file as bytes (also written to output_path if given).
+    """
+    wb = Workbook()
+
+    # Remove default sheet
+    wb.remove(wb.active)
+
+    _build_overview_sheet(wb.create_sheet(), kpis)
+    _build_corporate_sheet(wb.create_sheet(), kpis)
+    _build_individual_sheet(wb.create_sheet(), kpis)
+    _build_alignment_sheet(wb.create_sheet(), kpis)
+    _build_summary_sheet(wb.create_sheet(), kpis)
+
+    if output_path:
+        wb.save(output_path)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+# ============================================================
+# FASTAPI / DJANGO RESPONSE HELPERS
+# ============================================================
+
+def make_excel_response_headers(filename: str = "kpi_report.xlsx") -> dict[str, str]:
+    """Return HTTP headers for an Excel file download response."""
+    return {
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-cache",
+    }
+
+
+# FastAPI example:
+#
+# from fastapi import APIRouter
+# from fastapi.responses import Response
+#
+# router = APIRouter()
+#
+# @router.get("/kpis/export")
+# async def export_kpis(kpi_service: KPIService = Depends(get_kpi_service)):
+#     records = await kpi_service.get_all_as_records()
+#     raw = export_kpis_to_excel(records)
+#     filename = f"kpi_report_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
+#     return Response(
+#         content=raw,
+#         headers=make_excel_response_headers(filename),
+#     )
+
+
+# ============================================================
+# DEMO / SMOKE TEST
+# ============================================================
+
+if __name__ == "__main__":
+    from datetime import date
+
+    alice = UserSummary("u1", "Alice", "Chen", "alice.chen@corp.com", "Engineering")
+    bob   = UserSummary("u2", "Bob",   "Kim",  "bob.kim@corp.com",   "Sales")
+
+    okr1 = OKRSummary("o1", "Achieve 99% platform uptime in Q2")
+    okr2 = OKRSummary("o2", "Grow APAC revenue by 20%")
+
+    kr1 = KeyResultSummary("kr1", "Reduce incident count below 5 per month")
+    kr2 = KeyResultSummary("kr2", "Close 15 enterprise deals")
+
+    sample_kpis: list[KPIRecord] = [
+        KPIRecord(
+            id="kpi-001", title="Platform Uptime", type=KPIType.CORPORATE,
+            unit=KPIUnit.PERCENTAGE, target_value=99.0, actual_value=98.5,
+            weight=30, department="Engineering",
+            period_start=date(2025, 4, 1), period_end=date(2025, 6, 30),
+            okr=okr1, key_result=kr1,
+        ),
+        KPIRecord(
+            id="kpi-002", title="Monthly Incident Count", type=KPIType.CORPORATE,
+            unit=KPIUnit.NUMBER, target_value=5, actual_value=3,
+            weight=20, department="Engineering",
+            period_start=date(2025, 4, 1), period_end=date(2025, 6, 30),
+            okr=okr1, key_result=kr1,
+        ),
+        KPIRecord(
+            id="kpi-003", title="APAC Revenue", type=KPIType.CORPORATE,
+            unit=KPIUnit.CURRENCY, target_value=2_000_000, actual_value=None,
+            weight=40, department="Sales",
+            period_start=date(2025, 4, 1), period_end=date(2025, 6, 30),
+            okr=okr2,
+        ),
+        KPIRecord(
+            id="kpi-004", title="Alice — Pull Requests Reviewed", type=KPIType.INDIVIDUAL,
+            unit=KPIUnit.NUMBER, target_value=40, actual_value=45,
+            weight=25, owner=alice,
+            period_start=date(2025, 4, 1), period_end=date(2025, 6, 30),
+            okr=okr1, key_result=kr1,
+        ),
+        KPIRecord(
+            id="kpi-005", title="Bob — Enterprise Deals Closed", type=KPIType.INDIVIDUAL,
+            unit=KPIUnit.NUMBER, target_value=15, actual_value=9,
+            weight=50, owner=bob,
+            period_start=date(2025, 4, 1), period_end=date(2025, 6, 30),
+            okr=okr2, key_result=kr2,
+        ),
+        KPIRecord(
+            id="kpi-006", title="Bob — Customer Satisfaction Score", type=KPIType.INDIVIDUAL,
+            unit=KPIUnit.SCORE, target_value=4.5, actual_value=4.2,
+            weight=30, owner=bob,
+            period_start=date(2025, 4, 1), period_end=date(2025, 6, 30),
+        ),
+    ]
+
+    out = "kpi_report_demo.xlsx"
+    export_kpis_to_excel(sample_kpis, output_path=out)
+    print(f"✅  Excel report written to: {out}")
